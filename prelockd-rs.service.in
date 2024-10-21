@@ -1,0 +1,11 @@
+[Unit]
+Description=Lock files into memory
+
+[Service]
+User=prelockd-rs
+ExecStart=@SBINDIR@/prelockd-rs
+OOMScoreAdjust=-500
+AmbientCapabilities=CAP_IPC_LOCK CAP_DAC_OVERRIDE
+
+[Install]
+WantedBy=multi-user.target

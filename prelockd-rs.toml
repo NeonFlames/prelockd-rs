@@ -1,0 +1,27 @@
+[lock]
+# Max size of single files
+# Default unit is bytes
+# k, m, g - Kibibytes, Mebibytes, Gibibytes
+# % - Percentage of system memory
+max_file_size = "20m"
+# Max size of locked memory
+max_total_size = "10%"
+
+# Where to find files to lock
+locations = ["/bin", "/sbin", "/lib"]
+
+# Order in which files are loaded
+# fl - First to last
+# sl - Smallest to largest
+# ls - Largest to smallest
+sorting_method = "sl"
+
+[load]
+# Files to load
+files = ["sh", "bash", "fish", "zsh", "login", ".*systemd.*", "pipewire", "pulseaudio"]
+
+lists = ["pipewire", "wayland", "x11"]
+
+pipewire = [".*pipewire.*", ".*wireplumber.*"] 
+wayland = ["Xwayland", "libwayland.*"]
+x11 = ["X", "Xorg", "libxcb.*"]
