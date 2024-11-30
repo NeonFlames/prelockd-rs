@@ -1,10 +1,11 @@
 use clap::{command, Parser};
 use once_cell::sync::Lazy;
 use toml::Table;
-use std::fs::{self, DirEntry};
+use std::{fs::{self, DirEntry}, sync::{RwLock, Mutex}};
 use sysinfo::{MemoryRefreshKind, RefreshKind, System};
 use regex::{Regex, RegexBuilder};
 use memmap2::Mmap;
+use rayon::prelude::*;
 
 #[derive(PartialEq)]
 enum SortingMethod { FL, SL, LS }
@@ -36,32 +37,36 @@ struct FileInfo {
     size: u64
 }
 
-static mut LOADED: Lazy<Vec<(String,Mmap)>> = Lazy::new(|| {
-    Vec::new()
+static mut LOADED: Lazy<RwLock<Vec<(String,Mmap)>>> = Lazy::new(|| {
+    RwLock::new(Vec::new())
 });
 
 fn size_to_bytes(size: &str, lock: &Lock) -> Option<usize> {
     static STB_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"(\d*)([m,k,g,%])?").unwrap());
     if let Some(data) = STB_RE.captures(size) {
-        if let Some(value) = data.get(0) {
+        if let Some(value) = data.get(1) {
             let value = value.as_str().parse::<usize>().unwrap_or(0);
             if value != 0 {
-                match data.get(1).expect("Regex capture group doesn't exist?").as_str() {
-                    "k" => {
-                        return Some(value*KIB)
+                if let Some(qualifier) = data.get(2) {
+                    match qualifier.as_str() {
+                        "k" => {
+                            return Some(value*KIB)
+                        }
+                        "m" => {
+                            return Some(value*MIB)
+                        }
+                        "g" => {
+                            return Some(value*GIB)
+                        }
+                        "%" => {
+                            return Some(((lock.memory_size*value) as f64*0.01) as usize)
+                        }
+                        _ => {
+                            return Some(value)
+                        }
                     }
-                    "m" => {
-                        return Some(value*MIB)
-                    }
-                    "g" => {
-                        return Some(value*GIB)
-                    }
-                    "%" => {
-                        return Some(lock.memory_size/value)
-                    }
-                    _ => {
-                        return Some(value)
-                    }
+                } else {
+                    return Some(value)
                 }
             } else {
                 return Some(0)
@@ -115,9 +120,10 @@ fn daemon_setup(config_file: &str) -> Result<(), String> {
         if lock.max_file_size == 0 {
             return Err("Max file size is zero!".to_string())
         }
-
+        
+        let files = Mutex::new(&mut files);
         let locations = lock_config["locations"].as_array().expect("locations was not an array!");
-        for location in locations {
+        locations.par_iter().for_each(|location| {
             let location = location.as_str().expect("locations have to be strings!");
             if let Ok(location_data) = fs::metadata(location) {
                 if location_data.is_dir() {
@@ -126,17 +132,17 @@ fn daemon_setup(config_file: &str) -> Result<(), String> {
                             if let Ok(file) = file {
                                 if let Ok(file_data) = file.metadata() {
                                     if file_data.is_file() && file_data.len() as usize <= lock.max_file_size {
-                                        files.push(file);
+                                        files.lock().unwrap().push(file);
                                     }
                                 }
                             }
                         }
                     } else {
-                        return Err(format!("Couldn't read {}", location))
+                        println!("Couldn't read {}", location);
                     }
                 }
             }
-        }
+        });
 
         if let Some(sorting_method) = lock_config["sorting_method"].as_str() {
             match sorting_method.to_lowercase().as_str() {
@@ -158,7 +164,7 @@ fn daemon_setup(config_file: &str) -> Result<(), String> {
         return Err(format!("lock table in {} is invalid!", config_file))
     }
     
-    let mut to_load: Vec<(String, FileInfo)> = Vec::new();
+    let to_load: RwLock<Vec<(String, FileInfo)>> = RwLock::new(Vec::new());
 
     // Find specified files
     if let Some(load) = config["load"].as_table() {
@@ -182,30 +188,31 @@ fn daemon_setup(config_file: &str) -> Result<(), String> {
             return Err(format!("load table in {} is invalid!", config_file))
         }
             
-        for pattern in patterns {
+        patterns.par_iter().for_each(|pattern| {
             let re = RegexBuilder::new(format!(r"/{}\z",pattern).as_str()).size_limit(u16::MAX as usize).build().expect("Unable to build regex pattern");
             for file in files.iter() {
                 if let Some(path) = file.path().to_str() {
                     if re.is_match(path) {
                         match file.metadata() {
-                            Ok(file_data) => to_load.push((String::from(path), FileInfo { size: file_data.len() })),
+                            Ok(file_data) => to_load.write().unwrap().push((String::from(path), FileInfo { size: file_data.len() })),
                             Err(err) => println!("Unable to get metadata for {}: {}", path, err)
                         }
                     }
                 }
             }
-        }
+        });
         files.clear();
     }
 
     match lock.sorting_method {
-        SortingMethod::SL => to_load.sort_by(|file_a, file_b| file_a.1.size.cmp(&file_b.1.size)),
-        SortingMethod::LS => to_load.sort_by(|file_a, file_b| file_b.1.size.cmp(&file_a.1.size)),
+        SortingMethod::SL => to_load.write().unwrap().sort_by(|file_a, file_b| file_a.1.size.cmp(&file_b.1.size)),
+        SortingMethod::LS => to_load.write().unwrap().sort_by(|file_a, file_b| file_b.1.size.cmp(&file_a.1.size)),
         _ => {}
     }
-    for to_load in to_load {
-        if lock.current_size+(to_load.1.size as usize) > lock.max_total_size {
-            continue;
+    let current_size: Mutex<usize> = Mutex::new(0);
+    to_load.read().unwrap().par_iter().for_each(|to_load| {
+        if *current_size.lock().unwrap() + to_load.1.size as usize > lock.max_total_size {
+            return;
         }
         let path = to_load.0.clone();
         if let Ok(file) = fs::File::open(&path) {
@@ -213,17 +220,18 @@ fn daemon_setup(config_file: &str) -> Result<(), String> {
                 // TODO: Stop relying on the default behavior of Mmap::map
                 if let Ok(mmap) = Mmap::map(&file) {
                     mmap.lock().expect("Failed to lcoked memory");
-                    lock.current_size += mmap.len();
-                    LOADED.push((path, mmap));
+                    *current_size.lock().unwrap() += mmap.len();
+                    LOADED.write().unwrap().push((path, mmap));
                 } else {
                     println!("Failed to map {} to memory", path);
                 }
             }
         }
-    }
+    });
+    lock.current_size = *current_size.lock().unwrap();
 
     unsafe {
-        println!("{} of memory, {} files locked", bytes_to_size(lock.current_size), LOADED.len());
+        println!("{} of memory, {} files locked", bytes_to_size(lock.current_size), LOADED.read().unwrap().len());
     }
     Ok(())
 }
@@ -236,7 +244,8 @@ fn daemon_run() {
 
 fn daemon_usage() {
     unsafe {
-        for file in LOADED.iter() {
+        let loaded = LOADED.read().expect("Failed to get loaded files");
+        for file in loaded.iter() {
             println!("{} - {}", file.0.clone(), bytes_to_size(file.1.len()));
         }
     }

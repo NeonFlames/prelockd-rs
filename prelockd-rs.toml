@@ -20,8 +20,9 @@ sorting_method = "sl"
 # Files to load
 files = ["sh", "bash", "fish", "zsh", "login", ".*systemd.*", "pipewire", "pulseaudio"]
 
-lists = ["pipewire", "wayland", "x11"]
+lists = ["pipewire", "wayland", "x11", "graphics"]
 
 pipewire = [".*pipewire.*", ".*wireplumber.*"] 
 wayland = ["Xwayland", "libwayland.*"]
-x11 = ["X", "Xorg", "libxcb.*"]
+x11 = ["X", "Xorg", "libxcb.*", "libX.*"]
+graphics = ["libGL.*", "libEGL.*", "libvulkan.*"]

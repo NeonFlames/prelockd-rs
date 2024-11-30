@@ -17,13 +17,13 @@ unit:
 	install -d $(SYSTEMDUNITDIR)
 	install -m 644 target/prelockd-rs.service $(SYSTEMDUNITDIR)/
 
-install: release user unit
+install: target/release/prelockd-rs user unit
 	install -d $(SBINDIR)
 	install -m 755 target/release/prelockd-rs $(SBINDIR)/
 	install -d $(SYSCONFDIR)
 	install -m 644 prelockd-rs.toml $(SYSCONFDIR)/
 
-install/debug: debug user unit
+install/debug: target/debug/prelockd-rs user unit
 	install -d $(SBINDIR)
 	install -m 755 target/debug/prelockd-rs $(SBINDIR)/
 	install -d $(SYSCONFDIR)
